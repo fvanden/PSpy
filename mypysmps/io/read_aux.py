@@ -3,7 +3,10 @@
 import numpy as np
 import warnings
 
-from ..config import get_metadata, _DEFAULT_VARIABLES,  _FIELD_MAPPING
+from ..config import get_metadata, _DEFAULT_VARIABLES,  _FIELD_MAPPING, _CONVERSIONS
+from ..util.ps_utils import convert_units
+from ..util.timetransform import TimeTransform
+tt = TimeTransform()
 
 #################
 
@@ -339,19 +342,35 @@ def opc_file_to_config(datadict, metadatadict, header, fileorg = 'OPC', **kwargs
     
     
     """  
-    # TODO: convert SFR in ml/s to aerosol flow L/s
+    # get conversions dict if exists
+    if fileorg in _CONVERSIONS:
+        convdict = _CONVERSIONS[fileorg]
+        convvars = list(convdict.keys())
+    else:
+        convvars = []
     outdict = {}
     
-    variables = ['time','duration','latitude','longitude','fix_time', 'temperature','relative_humidity']
+    #variables = ['time','duration','latitude','longitude','fix_time', 'temperature','relative_humidity']
+    variables = header
     for variable in variables:   
-        outdict[variable] = get_metadata(variable)
-        filenaming =  _FIELD_MAPPING[fileorg][variable]
+        if 'bin' in variable:
+            pass
+        else:
+            filenaming =  _FIELD_MAPPING[fileorg][variable]
+            
+        outdict[filenaming] = get_metadata(filenaming)
         try:
-            _ = datadict[filenaming]
-            try:
-                outdict[variable]['data'] = [float(i) for i in datadict[filenaming]]
-            except ValueError:
-                outdict[variable]['data'] = [i for i in datadict[filenaming]]
+            _ = datadict[variable]
+            if filenaming == 'time' or filenaming == 'date':
+                # prevent time from being converted into a float
+                outdict[filenaming]['data'] = [i for i in datadict[variable]]
+            else:
+                try:
+                    outdict[filenaming]['data'] = [float(i) for i in datadict[variable]]
+                except ValueError:
+                    outdict[filenaming]['data'] = [i for i in datadict[variable]]
+            if filenaming in convvars:
+                    outdict[filenaming]['data'] = convert_units(outdict[filenaming]['data'], *convdict[filenaming])
         except KeyError:
             pass
         
@@ -363,12 +382,140 @@ def opc_file_to_config(datadict, metadatadict, header, fileorg = 'OPC', **kwargs
     data = []
     for abin in bins:
         data.append([float(i) for i in datadict[abin]])
-        
+    
     field = {}
     datafield = _DEFAULT_VARIABLES['Raw Counts']['Number']
     field[datafield] = get_metadata(datafield)
     field[datafield]['data'] = np.ma.asarray(data)
+    field['coordinates'] = ['diameter','sample'] 
+    field['variables'] = [datafield]
     
-    outdict['data'] = field
+    time = outdict.pop('time')
+    
+    sample = get_metadata('sample')
+    sample['data'] = np.arange(0,len(time['data']))
+
+    return time, sample, field, diameter, outdict
+
+def grimm_file_to_config(datadict, metadatadict, header, fileorg = 'Grimm', **kwargs):
+    """
+    Organises data read from file into metadata dictionaries 
+    from config
+    
+    Parameters
+    ----------
+    datadict : dict 
+        dictionary with data read from file
+    
+    metadatadict : dict
+        dictionary with metadata read from file
         
+    header : list
+        file header
+        
+    fileorg : str
+        organisation of the file
+        
+    Returns
+    -------
+    metadatadictionaries : dict
+        all of the data and variables in the format specified in the configuration files
+    
+    
+    """  
+    # get conversions dict if exists
+    if fileorg in _CONVERSIONS:
+        convdict = _CONVERSIONS[fileorg]
+        convvars = list(convdict.keys())
+        
+    outdict = {}
+    diameter = get_metadata('diameter')
+    diameter['data'] = [0.0] #GRIMM does not have a lower limit
+    bins = [] 
+    
+    variables = header
+    for variable in variables:
+        try:
+            diameter['data'].append(float(variable))
+            bins.append(variable)
+        except ValueError:
+            try:
+                filenaming =  _FIELD_MAPPING[fileorg][variable]
+            except KeyError:
+                filenaming = variable
+            outdict[filenaming] = get_metadata(filenaming)
+            try:
+                _ = datadict[variable]
+                try:
+                    outdict[filenaming]['data'] = [float(i) for i in datadict[variable]]
+                except ValueError:
+                    outdict[filenaming]['data'] = [i for i in datadict[variable]]
+                if filenaming in convvars:
+                    outdict[filenaming]['data'] = convert_units(outdict[filenaming]['data'], *convdict[filenaming])
+            except KeyError:
+                pass
+            
+        
+    
+    data = []
+    for abin in bins:
+        data.append([float(i) for i in datadict[abin]])
+    
+    field = {}
+    datafield = _DEFAULT_VARIABLES['Concentration (DW)']['Number']
+    field[datafield] = get_metadata(datafield)
+    field[datafield]['data'] = np.ma.asarray(data)
+    field['units'] = '#/L'
+    field['coordinates'] = ['diameter','sample'] 
+    
+    
+    try:
+        time = outdict.pop('time')
+    except KeyError:
+        time = outdict.pop('datetime')
+            
+    sample = get_metadata('sample')
+    sample['data'] = np.arange(0,len(time['data']))            
+
+    return time, sample, field, diameter, outdict
+
+def file_to_config(datadict, metadatadict, header, fileorg, **kwargs):
+    """
+    Organises data read from file into metadata dictionaries from config
+    
+    Parameters
+    ----------
+    datadict : dict 
+        dictionary with data read from file
+    
+    metadatadict : dict
+        dictionary with metadata read from file
+        
+    header : list
+        file header
+        
+    fileorg : str
+        organisation of the file
+        
+    Returns
+    -------
+    metadatadictionaries : dict
+        all of the data and variables in the format specified in the configuration files
+    
+    
+    """  
+    outdict = {}
+    
+    variable_list = list(datadict.keys())
+    for variable in variable_list:
+        if fileorg is not None:
+            varname = _FIELD_MAPPING[fileorg][variable]
+        else:
+            varname = variable
+       
+        vardict = get_metadata(varname)
+        vardict['data'] = datadict[variable]
+        outdict[varname] = vardict
+            
     return outdict
+    
